@@ -25,7 +25,9 @@ async def query_graph_only(query: str):
             llm_model=LLM_MODEL, 
             query=query
         )
-        print(f'Response: {response}')
-        return response
+        return {
+            "answer": response.answer,
+            "results": response.retriever_result
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
