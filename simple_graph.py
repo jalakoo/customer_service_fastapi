@@ -2,6 +2,9 @@ from neo4j import GraphDatabase
 from neo4j_graphrag.retrievers import Text2CypherRetriever
 from neo4j_graphrag.llm import OpenAILLM
 from neo4j_graphrag.generation import GraphRAG
+from neo4j_graphrag.schema import get_schema
+from validator import validate_answer_with_context
+from variation import generate_query_variation
 import os
 import dotenv
 dotenv.load_dotenv()
@@ -10,58 +13,6 @@ dotenv.load_dotenv()
 URI = os.getenv("NEO4J_URI")
 AUTH = (os.getenv("NEO4J_USERNAME"), os.getenv("NEO4J_PASSWORD"))
 RAG = None
-
-def get_node_properties(driver):
-    """Get node properties from the database schema.
-    
-    Args:
-        driver: Neo4j database driver
-        
-    Returns:
-        dict: Dictionary mapping labels to their properties
-    """
-    query = """
-    CALL db.schema.nodeTypeProperties()
-    """
-    result = driver.execute_query(query)
-    
-    return result
-
-def get_relationship_properties (driver):
-    query = "CALL db.schema.relTypeProperties()"
-    result = driver.execute_query(query)
-
-    return result
-
-def get_relationships(driver):
-    query = """
-    CALL db.schema.visualization()
-    YIELD relationships
-    UNWIND relationships AS rel
-    RETURN 
-      rel.start.labels[0] AS from,
-      rel.relationshipType AS type,
-      rel.end.labels[0] AS to
-    """
-    result = driver.execute_query(query)
-    
-    return result
-
-def getSchema(driver: GraphDatabase):
-    node_props = get_node_properties(driver)
-    rels = get_relationships(driver)
-    rel_props = get_relationship_properties(driver)
-
-    result = "Nodes:\n"
-    result += f"{node_props}\n"
-    result += "\n"
-    result += "Relationships:\n"
-    result += f"{rels}\n"
-    result += "\n"
-    result += "Relationship Properties:\n"
-    result += f"{rel_props}\n"
-    
-    return result
 
 def validate_cypher_query(driver: GraphDatabase, query: str) -> bool:
     """Validate if a Cypher query is valid by attempting to run it with LIMIT 1.
@@ -96,8 +47,60 @@ def getExampleQueries(driver: GraphDatabase, schema: str) -> list[str]:
     Returns:
         list[str]: List of example queries in the format "USER INPUT: 'query' QUERY: cypher_query"
     """
+
+    # Sample Schema
+    # - **Staff**
+    # - `id`: INTEGER Min: 1, Max: 6
+    # - `name`: STRING Available options: ['Lena Patel', 'Marcus Lee', 'Anya Rojas', 'Tomoko Sato', 'Dennis Grant', 'Zhihao Chen']
+    # - `bio`: STRING Available options: ['Former hardware engineer at a top semiconductor fi', 'Android developer with a background in mobile OS o', 'UI/UX designer specializing in mobile interfaces w', 'Electrical engineer with a PhD in signal processin', 'Product manager with 10 years of experience launch', 'Supply chain analyst with a background in electron']
+    # - `hired_at`: DATE_TIME Min: 2024-11-30T12:15:00Z, Max: 2025-02-10T09:00:00Z
+    # - **Doc**
+    # - `id`: INTEGER Min: 1, Max: 6
+    # - `title`: STRING Available options: ['Getting Started with Your Phone', 'Maximizing Battery Life', 'Customizing Your Device', 'Troubleshooting Common Issues', 'Using Advanced Camera Features', 'Securing Your Smartphone']
+    # - `content`: STRING Available options: ['A quick-start guide covering unboxing', "Best practices for extending your smartphone's bat", 'Tips on personalizing settings', 'Step-by-step solutions for frequent problems like ', 'Guide to HDR', 'Instructions on enabling fingerprint']
+    # - **Product**
+    # - `id`: INTEGER Min: 1, Max: 3
+    # - `name`: STRING Available options: ['Phoenix X1', 'Aurora Z5', 'Volt Mini']
+    # - `description`: STRING Available options: ['Compact budget smartphone with dual cameras', 'Mid-range smartphone with AMOLED display and long ', 'Slim smartphone ideal for travel and backup use']
+    # - `available_since`: DATE_TIME Min: 2025-02-28T09:30:00Z, Max: 2025-04-10T10:00:00Z
+    # - `cost_usd`: INTEGER Min: 60, Max: 120
+    # - `msrp_usd`: INTEGER Min: 130, Max: 300
+    # - **Person**
+    # - `id`: INTEGER Min: 1, Max: 10
+    # - `name`: STRING Available options: ['Emily Carter', 'Jamal Nguyen', 'Sofia Bennett', 'Rajesh Verma', 'Mina Okafor', 'Bryce Lang', 'Linh Tran', 'Dario Costa', 'Keiko Yamamoto', 'Andres Silva']
+    # - `email`: STRING Available options: ['emily.carter@technova.com', 'jamal.nguyen@innovamobile.com', 'sofia.bennett@nexondevices.com', 'rajesh.verma@globetel.com', 'mina.okafor@futurecom.com', 'bryce.lang@voltedge.com', 'linh.tran@omniwave.com', 'dario.costa@soniccell.com', 'keiko.yamamoto@skyreach.com', 'andres.silva@picochip.com']
+    # - `customer_since`: DATE_TIME Min: 2024-06-22T09:00:00Z, Max: 2025-01-10T10:30:00Z
+    # - **Company**
+    # - `company_name`: STRING Available options: ['TechNova Inc', 'InnovaMobile', 'Nexon Devices', 'GlobeTel Solutions', 'FutureCom Ltd', 'VoltEdge Electronics', 'OmniWave Mobile', 'SonicCell Corp', 'SkyReach Tech', 'PicoChip Systems']
+    # - **Order**
+    # - `id`: INTEGER Min: 1, Max: 24
+    # - `ordered_at`: DATE_TIME Min: 2025-05-10T03:55:09Z, Max: 2025-05-24T06:03:09Z
+    # - `delivered_at`: DATE_TIME Min: 2025-05-14T05:03:09Z, Max: 2025-06-01T05:34:09Z
+    # - **Vendor**
+    # - `id`: INTEGER Min: 1, Max: 8
+    # - `name`: STRING Available options: ['NanoTech Circuits', 'CrystalView Displays', 'PowerCore Batteries', 'HyperLink Antennas', 'TouchWave Sensors', 'VoltEdge Chargers', 'FlexiFrame Housings', 'OptiGlass Panels']
+    # - **DELIVERY_SERVICE**
+    # - `id`: INTEGER Min: 1, Max: 3
+    # - `name`: STRING Available options: ['SwiftShip Logistics', 'AeroParcel Express', 'NeoTrack Couriers']
+    # Relationship properties:
+    # - **CONTAINS**
+    # - `count`: INTEGER Min: 1, Max: 12
+    # The relationships:
+    # (:Staff)-[:MANAGES]->(:DELIVERY_SERVICE)
+    # (:Staff)-[:OVERSEES]->(:Vendor)
+    # (:Staff)-[:WORKS_FOR]->(:Staff)
+    # (:Staff)-[:WROTE]->(:Doc)
+    # (:Doc)-[:ABOUT]->(:Product)
+    # (:Person)-[:WORKS_FOR]->(:Company)
+    # (:Person)-[:MADE]->(:Order)
+    # (:Order)-[:DELIVERED_BY]->(:DELIVERY_SERVICE)
+    # (:Order)-[:CONTAINS]->(:Product)
+    # (:Order)-[:ASSIGNED_TO]->(:Staff)
+    # (:Vendor)-[:SUPPLIES]->(:Product)
+
     examples = []
     
+
     # Parse node properties
     node_props = {}
     rels = []
@@ -173,25 +176,49 @@ def getExampleQueries(driver: GraphDatabase, schema: str) -> list[str]:
             end_node = rel.split(')')[-2].split(':')[-1].strip('`')
             rel_type = parts[1].split(']')[0].strip('[]')
             
+            # Generate a valid aggregation query without using max(count())
             query = (
                 f"MATCH (a:`{start_node}`)-[r:`{rel_type}`]->(b:`{end_node}`) "
                 f"WITH a, count(r) AS rel_count "
                 f"RETURN a, rel_count ORDER BY rel_count DESC LIMIT 5"
             )
             
+            # Also add a simpler count query
+            simple_count_query = (
+                f"MATCH (a:`{start_node}`)-[r:`{rel_type}`]->(b:`{end_node}`) "
+                f"RETURN a, count(r) AS rel_count ORDER BY rel_count DESC LIMIT 5"
+            )
+            
+            # Add both variations
+            queries = [query, simple_count_query]
+        else:
+            queries = [query]
+            
+        for q in queries:
             # Only add the query if it's valid
-            if not validate_cypher_query(driver, query):
+            if not validate_cypher_query(driver, q):
                 continue
+                
             examples.append(
                 f"USER INPUT: 'Which {start_node} has the most {rel_type} relationships?' "
-                f"QUERY: {query}"
+                f"QUERY: {q}"
             )
     
-
-
+    # Add some additional safe aggregation examples
+    safe_aggregation_queries = [
+        "MATCH (n) RETURN labels(n) AS label, count(*) AS count ORDER BY count DESC LIMIT 10",
+        "MATCH (n) UNWIND labels(n) AS label RETURN label, count(*) AS count ORDER BY count DESC",
+        "MATCH ()-[r]->() RETURN type(r) AS relationship_type, count(*) AS count ORDER BY count DESC",
+    ]
+    
+    for q in safe_aggregation_queries:
+        if validate_cypher_query(driver, q):
+            examples.append(
+                f"USER INPUT: 'Show me relationship type distribution' "
+                f"QUERY: {q}"
+            )
+    
     return examples
-
-
 def graphrag(
     driver: GraphDatabase,
     retriever_model: str,
@@ -203,7 +230,7 @@ def graphrag(
     if RAG is not None:
         return RAG
 
-    neo4j_schema = getSchema(driver)
+    neo4j_schema = get_schema(driver, is_enhanced=True)
     print(f'Auto-generated Schema: {neo4j_schema}')
     
     examples = getExampleQueries(driver, neo4j_schema)
@@ -258,7 +285,8 @@ def query_graph(
     password: str,
     retriever_model: str,
     llm_model: str,
-    query: str):
+    query: str,
+    retries: int = 0):
     
     # Connect to Neo4j database
     with GraphDatabase.driver(uri, auth=(username, password)) as driver:
@@ -269,7 +297,51 @@ def query_graph(
         response = rag.search(
             query_text=query, 
             return_context=True)
-        return response
+
+        results = response.retriever_result.items
+        if len(results) == 0:
+            if retries < int(os.getenv("RETRY_COUNT")):
+                print(f'No results found, retrying ({retries + 1}/{os.getenv("RETRY_COUNT")})')
+                new_query = generate_query_variation(
+                    query=query,
+                    schema=get_schema(driver, is_enhanced=True),
+                    prior_query=response.retriever_result.metadata["cypher"]
+                )
+                print(f'New query: {new_query}')
+                return query_graph(
+                    uri=uri, 
+                    username=username, 
+                    password=password,
+                    retriever_model=retriever_model,
+                    llm_model=llm_model,
+                    query=new_query,
+                    retries=retries + 1)
+            else:
+                return response
+        
+        # Check if answer matches with results
+        is_valid = validate_answer_with_context(
+            answer=response.answer,
+            retrieved_results=response.retriever_result.items
+        )
+        print(f'Answer is valid check: {is_valid}')
+        if not is_valid:
+            print(f'Answer is not valid, retrying ({retries + 1}/{os.getenv("RETRY_COUNT")})')
+            new_query = generate_query_variation(
+                query=query,
+                schema=get_schema(driver, is_enhanced=True),
+                prior_query=response.retriever_result.metadata["cypher"]
+            )
+            return query_graph(
+                uri=uri, 
+                username=username, 
+                password=password,
+                retriever_model=retriever_model,
+                llm_model=llm_model,
+                query=new_query,
+                retries=retries + 1)
+        else:
+            return response
 
 if __name__ == "__main__":
     response = query_graph(
