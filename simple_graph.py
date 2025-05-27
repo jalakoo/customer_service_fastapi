@@ -230,12 +230,6 @@ def graphrag(
     if RAG is not None:
         return RAG
 
-    neo4j_schema = get_schema(driver, is_enhanced=True)
-    print(f'Auto-generated Schema: {neo4j_schema}')
-    
-    examples = getExampleQueries(driver, neo4j_schema)
-    print(f'Auto-generated Examples: {examples}')
-
     # (Optional) Manually Specify your own Neo4j schema
     # neo4j_schema = """
     # Node properties:
@@ -258,6 +252,11 @@ def graphrag(
     # "USER INPUT: 'Which Agent was assigned the most Chats?' QUERY: MATCH (p:Agent)-[:ASSIGNED_TO]-(m:Chat) WITH p.name AS name, COUNT(m) AS chat_count RETURN name, chat_count ORDER BY chat_count DESC LIMIT 1"
     # ]
 
+    neo4j_schema = get_schema(driver, is_enhanced=True)
+    print(f'Auto-generated Schema: {neo4j_schema}')
+    
+    examples = getExampleQueries(driver, neo4j_schema)
+    print(f'Auto-generated Examples: {examples}')
 
     # Create LLM object
     t2c_llm = OpenAILLM(model_name=retriever_model)
@@ -294,14 +293,30 @@ def query_graph(
             driver=driver, 
             retriever_model=retriever_model,
             llm_model=llm_model)
-        response = rag.search(
-            query_text=query, 
-            return_context=True)
 
+        results = None
+        try:
+            response = rag.search(
+                query_text=query, 
+                return_context=True)
+        except Exception as e:
+            print(f'Error running query: {str(e)}. Retrying ({retries + 1}/{os.getenv("RETRY_COUNT")})')
+            return query_graph(
+                uri=uri, 
+                username=username, 
+                password=password,
+                retriever_model=retriever_model,
+                llm_model=llm_model,
+                query=query,
+                retries=retries + 1)
+
+        print(f'Response from rag search: {response}')
         results = response.retriever_result.items
+        retry_count = int(os.getenv("RETRY_COUNT", "3"))  # Default to 3 retries if not set
+        
         if len(results) == 0:
-            if retries < int(os.getenv("RETRY_COUNT")):
-                print(f'No results found, retrying ({retries + 1}/{os.getenv("RETRY_COUNT")})')
+            if retries < retry_count:
+                print(f'No results found, retrying ({retries + 1}/{retry_count})')
                 new_query = generate_query_variation(
                     query=query,
                     schema=get_schema(driver, is_enhanced=True),
@@ -326,7 +341,7 @@ def query_graph(
         )
         print(f'Answer is valid check: {is_valid}')
         if not is_valid:
-            print(f'Answer is not valid, retrying ({retries + 1}/{os.getenv("RETRY_COUNT")})')
+            print(f'Answer is not valid, retrying ({retries + 1}/{retry_count})')
             new_query = generate_query_variation(
                 query=query,
                 schema=get_schema(driver, is_enhanced=True),

@@ -51,15 +51,11 @@ def validate_answer_with_context(
     1. The answer MUST be fully supported by the context. If any part of the answer cannot be verified by the context, it's invalid.
     2. The answer MUST NOT contain any information that contradicts the context.
     3. The answer MUST NOT claim insufficient context if the context contains any relevant information.
-    4. The answer MUST be precise and specific. Vague or generic answers are invalid.
-    5. The answer MUST directly address the question using the provided context.
     
     Common reasons for invalidation:
-    - Making assumptions not in the context
     - Providing generic responses that don't use the context
     - Claiming lack of information when context exists
     - Including information not present in the context
-    - Being overly vague or non-specific
     
     Return your response as a JSON object with the following structure:
     {{
@@ -67,7 +63,45 @@ def validate_answer_with_context(
         "reasoning": "Detailed explanation of your decision, including specific issues found"
     }}
     
-    Be strict in your evaluation. When in doubt, mark as invalid.
+    Be strict in your evaluation. When in doubt, mark as invalid (false).
+
+    EXAMPLE 1:
+    Example answer to validate : "The context provided does not include specific information about the suggested retail prices of products, so I cannot determine which products have the maximum suggested retail price by the manufacturer. Additional data on product prices would be needed to answer this question.",
+    Example context : 
+        "items": [
+        {{
+            "content": "<Record p.name='Aurora Z5'>",
+            "metadata": null
+        }}
+        ],
+        "metadata": {{
+        "cypher": "MATCH (p:Product)\nWHERE p.msrp_usd = 300\nRETURN p.name",
+        "__retriever": "Text2CypherRetriever"
+        }}
+    Example output:
+    {{
+        "is_valid": False,
+        "reasoning": "The answer does not use the context with clear answer."
+    }}
+
+    EXAMPLE 2:
+    Example answer to validate : "I'm sorry, but the provided context does not contain information about which staff members manage the delivery service for the largest orders by number of products.",
+    Example context : 
+        "items": [
+        {{
+            "content": "<Record s.name='Lena Patel'>",
+            "metadata": null
+        }}
+        ],
+        "metadata": {{
+        "cypher": "MATCH (s:Staff)-[:MANAGES]->(:DELIVERY_SERVICE)<-[:DELIVERED_BY]-(o:Order)-[:CONTAINS]->(p:Product)\nWITH s, SUM(o.count) AS totalProducts\nORDER BY totalProducts DESC\nRETURN s.name\nLIMIT 1",
+        "__retriever": "Text2CypherRetriever"
+        }}
+    Example output:
+    {{
+        "is_valid": False,
+        "reasoning": "The answer does not use the context with a provided answer."
+    }}
     """
     
     try:
